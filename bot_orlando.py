@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # === CONFIGURACIÓN ===
-TOKEN = "8464742878:AAFzcojCQ3LDsPW09va4XhK1VDYZ46HLoYE"
+TOKEN = os.environ.get("TOKEN")
 BOT_USERNAME = "@mesa_baccarat_bot"
 
 # === LOGS (para ver errores en Render) ===
