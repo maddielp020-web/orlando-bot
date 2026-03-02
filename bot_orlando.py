@@ -5,7 +5,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # === CONFIGURACIÓN ===
 TOKEN = os.environ.get("TOKEN")
-BOT_USERNAME = "@mesa_baccarat_bot"
+BOT_USERNAME = "@BacaraRealBot"
 
 # === LOGS (para ver errores en Render) ===
 logging.basicConfig(
