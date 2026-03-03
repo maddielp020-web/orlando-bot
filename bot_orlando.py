@@ -4,7 +4,7 @@ import time
 from threading import Thread
 from flask import Flask
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # === CONFIGURACIÓN ===
 TOKEN = os.environ.get("TOKEN")
@@ -65,7 +65,9 @@ def main():
 
     # Comandos
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("start_deposito", start_deposito))
+    
+    # ✅ CORREGIDO: Ahora captura /start deposito (con espacio)
+    app.add_handler(MessageHandler(filters.Regex('^/start deposito'), start_deposito))
 
     # Errores
     app.add_error_handler(error_handler)
