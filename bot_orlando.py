@@ -2,6 +2,7 @@ import os
 import logging
 import time
 import sqlite3
+from datetime import datetime
 from threading import Thread
 from flask import Flask
 from telegram import Update
@@ -10,7 +11,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # === CONFIGURACIÓN ===
 TOKEN = os.environ.get("TOKEN")
 BOT_USERNAME = "@BacaraRealBot"
-CREADOR_ID = int(os.environ.get("CREADOR_ID", 0))  # Variable de entorno o 0 por defecto
+CREADOR_ID = int(os.environ.get("CREADOR_ID", 0))
 
 # === BASE DE DATOS ===
 DB_NAME = "bacara_real.db"
@@ -53,16 +54,78 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# === COMANDO /start ===
+# === COMANDO /start (AHORA CON SOPORTE PARA INVITACIONES) ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    args = context.args
+    
+    # Caso 1: Hay argumentos y es una invitación
+    if args and args[0].startswith('invite_'):
+        codigo_admin = args[0].replace('invite_', '')
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # Buscar el admin por su código
+        cursor.execute("SELECT id, codigo_admin FROM administradores WHERE codigo_admin = ?", (codigo_admin,))
+        admin = cursor.fetchone()
+        
+        if admin:
+            admin_id = admin[0]
+            admin_codigo = admin[1]
+            
+            # Verificar si el jugador ya está registrado
+            cursor.execute("SELECT id FROM jugadores WHERE telegram_id = ?", (user.id,))
+            jugador_existente = cursor.fetchone()
+            
+            if jugador_existente:
+                # Jugador ya registrado - no duplicar
+                conn.close()
+                await update.message.reply_text(
+                    f"👋 Bienvenido de nuevo, {user.first_name}.\n\n"
+                    f"Ya tienes una cuenta registrada en Bacará Real.\n"
+                    f"Usa el lobby para comenzar a jugar."
+                )
+                return
+            else:
+                # Nuevo jugador - guardar con el admin que lo invitó
+                cursor.execute('''
+                    INSERT INTO jugadores (telegram_id, admin_id, fecha_registro)
+                    VALUES (?, ?, ?)
+                ''', (user.id, admin_id, datetime.now()))
+                conn.commit()
+                conn.close()
+                
+                await update.message.reply_text(
+                    f"🎰 **¡Bienvenido a Bacará Real!**\n\n"
+                    f"Has sido invitado por el administrador **{admin_codigo}**.\n\n"
+                    f"Tu cuenta ha sido registrada correctamente.\n"
+                    f"Ahora puedes acceder al lobby y comenzar a jugar.\n\n"
+                    f"Usa los botones del menú para continuar.",
+                    parse_mode="Markdown"
+                )
+                print(f"✅ Nuevo jugador registrado: {user.first_name} (ID: {user.id}) invitado por {admin_codigo}")
+                return
+        else:
+            # Código de admin no existe
+            conn.close()
+            await update.message.reply_text(
+                "❌ **Código de invitación inválido**\n\n"
+                "El código de administrador que has usado no existe.\n"
+                "Por favor, contacta al administrador para obtener un enlace válido.",
+                parse_mode="Markdown"
+            )
+            print(f"⚠️ Intento de invitación con código inválido: {codigo_admin} por {user.first_name} (ID: {user.id})")
+            return
+    
+    # Caso 2: /start normal (sin argumentos o sin invitación)
     await update.message.reply_text(
         f"🎰 Bienvenido, {user.first_name}.\n\n"
         "Este es el bot oficial de Bacará Real.\n"
         "Usa los botones del lobby para navegar."
     )
 
-# === COMANDO /start deposito ===
+# === COMANDO /start deposito (INTACTO) ===
 async def start_deposito(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -81,16 +144,14 @@ async def start_deposito(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# === COMANDO /crear_admin (SOLO PARA CREADOR) ===
+# === COMANDO /crear_admin (INTACTO) ===
 async def crear_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
-    # Verificar que sea el creador
     if user.id != CREADOR_ID:
         await update.message.reply_text("❌ No tienes permiso para usar este comando.")
         return
     
-    # Verificar que se proporcionó un código
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
             "❌ Formato incorrecto.\n"
@@ -101,7 +162,6 @@ async def crear_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     codigo = context.args[0].upper()
     
-    # Validar formato del código (ADMIN_XXX)
     if not codigo.startswith("ADMIN_") or len(codigo) < 7:
         await update.message.reply_text(
             "❌ El código debe tener formato ADMIN_XXX (ej: ADMIN_001)"
@@ -111,14 +171,12 @@ async def crear_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Verificar si el código ya existe
     cursor.execute("SELECT id FROM administradores WHERE codigo_admin = ?", (codigo,))
     if cursor.fetchone():
         conn.close()
         await update.message.reply_text(f"❌ El código {codigo} ya existe.")
         return
     
-    # Insertar nuevo administrador
     cursor.execute(
         "INSERT INTO administradores (codigo_admin, telegram_id, creado_por) VALUES (?, ?, ?)",
         (codigo, user.id, "CREADOR")
@@ -145,26 +203,20 @@ def run_web():
 
 # === MAIN: INICIAR BOT ===
 def main():
-    # Inicializar base de datos
     init_database()
     
     app = Application.builder().token(TOKEN).build()
 
-    # Comandos existentes (INTACTOS)
-    app.add_handler(CommandHandler("start", start))
+    # Comandos
+    app.add_handler(CommandHandler("start", start))  # AHORA maneja invitaciones
     app.add_handler(MessageHandler(filters.Regex('^/start deposito'), start_deposito))
-    
-    # NUEVO COMANDO: /crear_admin
     app.add_handler(CommandHandler("crear_admin", crear_admin))
 
-    # Errores
     app.add_error_handler(error_handler)
 
     print("🤖 Bot Orlando está corriendo...")
     app.run_polling()
 
 if __name__ == "__main__":
-    # Iniciar el servidor web en un hilo separado
     Thread(target=run_web).start()
-    # Iniciar el bot
     main()
