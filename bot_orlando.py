@@ -2,16 +2,19 @@ import os
 import logging
 import time
 import sqlite3
+import random
+import string
 from datetime import datetime
 from threading import Thread
 from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # === CONFIGURACIÓN ===
 TOKEN = os.environ.get("TOKEN")
 BOT_USERNAME = "@BacaraRealBot"
 CREADOR_ID = int(os.environ.get("CREADOR_ID", 0))
+URL_BIENVENIDA = "https://maddielp020-web.github.io/bacara-real/"
 
 # === BASE DE DATOS ===
 DB_NAME = "bacara_real.db"
@@ -32,12 +35,12 @@ def init_database():
         )
     ''')
     
-    # Tabla de jugadores
+    # Tabla de jugadores (con campo codigo_invitado)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS jugadores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id INTEGER UNIQUE NOT NULL,
-            codigo_invitado TEXT,
+            codigo_invitado TEXT UNIQUE,
             admin_id INTEGER,
             fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (admin_id) REFERENCES administradores(id)
@@ -54,7 +57,21 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# === COMANDO /start (AHORA CON SOPORTE PARA INVITACIONES) ===
+# === FUNCIONES AUXILIARES ===
+def generar_codigo_unico(admin_codigo):
+    """Genera código único formato: INV-ADMIN001-XXXX-YY"""
+    # Limpiar el código del admin (quitar guiones bajos si los hay)
+    admin_clean = admin_codigo.replace("_", "")
+    
+    # Generar 4 caracteres aleatorios (mayúsculas y números)
+    parte_aleatoria = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    
+    # Generar 2 dígitos de control
+    digitos_control = ''.join(random.choices(string.digits, k=2))
+    
+    return f"INV-{admin_clean}-{parte_aleatoria}-{digitos_control}"
+
+# === COMANDO /start (CON SOPORTE PARA INVITACIONES Y BOTONES) ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
@@ -79,12 +96,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             jugador_existente = cursor.fetchone()
             
             if jugador_existente:
-                # Jugador ya registrado - no duplicar
                 conn.close()
+                # Jugador ya registrado - ofrecer obtener código
+                keyboard = [[InlineKeyboardButton("🎟️ Obtener mi código de invitación", callback_data="micodigo")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
                 await update.message.reply_text(
                     f"👋 Bienvenido de nuevo, {user.first_name}.\n\n"
                     f"Ya tienes una cuenta registrada en Bacará Real.\n"
-                    f"Usa el lobby para comenzar a jugar."
+                    f"Presiona el botón para obtener tu código de invitación.",
+                    reply_markup=reply_markup
                 )
                 return
             else:
@@ -96,18 +117,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.commit()
                 conn.close()
                 
+                # Botón para que presione /start
+                keyboard = [[InlineKeyboardButton("🎮 /start", callback_data="iniciar")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
                 await update.message.reply_text(
-                    f"🎰 **¡Bienvenido a Bacará Real!**\n\n"
-                    f"Has sido invitado por el administrador **{admin_codigo}**.\n\n"
-                    f"Tu cuenta ha sido registrada correctamente.\n"
-                    f"Ahora puedes acceder al lobby y comenzar a jugar.\n\n"
-                    f"Usa los botones del menú para continuar.",
-                    parse_mode="Markdown"
+                    f"🎮 **Bienvenido al bot de Bacará Real**\n\n"
+                    f"Has llegado mediante una invitación especial.\n\n"
+                    f"Para comenzar, presiona el botón **/start**.",
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup
                 )
                 print(f"✅ Nuevo jugador registrado: {user.first_name} (ID: {user.id}) invitado por {admin_codigo}")
                 return
         else:
-            # Código de admin no existe
             conn.close()
             await update.message.reply_text(
                 "❌ **Código de invitación inválido**\n\n"
@@ -115,14 +138,122 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Por favor, contacta al administrador para obtener un enlace válido.",
                 parse_mode="Markdown"
             )
-            print(f"⚠️ Intento de invitación con código inválido: {codigo_admin} por {user.first_name} (ID: {user.id})")
             return
     
     # Caso 2: /start normal (sin argumentos o sin invitación)
+    # Verificar si el usuario ya está registrado como jugador
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM jugadores WHERE telegram_id = ?", (user.id,))
+    jugador = cursor.fetchone()
+    conn.close()
+    
+    if jugador:
+        # Usuario ya registrado - ofrecer obtener código
+        keyboard = [[InlineKeyboardButton("🎟️ Obtener mi código de invitación", callback_data="micodigo")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"🎰 Bienvenido, {user.first_name}.\n\n"
+            f"Este es el bot oficial de Bacará Real.\n"
+            f"Presiona el botón para obtener tu código de invitación.",
+            reply_markup=reply_markup
+        )
+    else:
+        # Usuario no registrado - mensaje genérico
+        await update.message.reply_text(
+            f"🎰 Bienvenido, {user.first_name}.\n\n"
+            "Este es el bot oficial de Bacará Real.\n"
+            "Para jugar necesitas un enlace de invitación de un administrador."
+        )
+
+# === COMANDO /micodigo (NUEVO) ===
+async def micodigo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Verificar si el jugador está registrado
+    cursor.execute('''
+        SELECT j.id, j.codigo_invitado, a.codigo_admin 
+        FROM jugadores j
+        LEFT JOIN administradores a ON j.admin_id = a.id
+        WHERE j.telegram_id = ?
+    ''', (user.id,))
+    jugador = cursor.fetchone()
+    
+    if not jugador:
+        conn.close()
+        await update.message.reply_text(
+            "❌ No tienes una cuenta registrada.\n\n"
+            "Para obtener un código necesitas llegar mediante un enlace de invitación."
+        )
+        return
+    
+    jugador_id, codigo_actual, admin_codigo = jugador
+    
+    # Si ya tiene un código, usar ese
+    if codigo_actual:
+        codigo = codigo_actual
+    else:
+        # Generar nuevo código
+        codigo = generar_codigo_unico(admin_codigo)
+        
+        # Guardar en base de datos
+        cursor.execute(
+            "UPDATE jugadores SET codigo_invitado = ? WHERE id = ?",
+            (codigo, jugador_id)
+        )
+        conn.commit()
+    
+    conn.close()
+    
+    # Crear botón para ir a la ventana de bienvenida
+    keyboard = [[InlineKeyboardButton("🚪 Ir a ventana de bienvenida", url=URL_BIENVENIDA)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        f"🎰 Bienvenido, {user.first_name}.\n\n"
-        "Este es el bot oficial de Bacará Real.\n"
-        "Usa los botones del lobby para navegar."
+        f"✅ **Tu código de invitación es:**\n\n"
+        f"`{codigo}`\n\n"
+        f"**Copia este código.** Lo necesitarás en la ventana de bienvenida.\n\n"
+        f"Luego presiona el botón para continuar.",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+# === COMANDO /mi_enlace (NUEVO - SOLO CREADOR) ===
+async def mi_enlace(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    # Solo el creador puede usar este comando
+    if user.id != CREADOR_ID:
+        await update.message.reply_text("❌ No tienes permiso para usar este comando.")
+        return
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Buscar el código del admin del creador
+    cursor.execute("SELECT codigo_admin FROM administradores WHERE telegram_id = ?", (user.id,))
+    admin = cursor.fetchone()
+    conn.close()
+    
+    if not admin:
+        await update.message.reply_text(
+            "❌ No tienes un código de administrador asociado.\n"
+            "Primero debes crearlo con /crear_admin ADMIN_001"
+        )
+        return
+    
+    codigo_admin = admin[0]
+    enlace = f"https://t.me/{BOT_USERNAME[1:]}?start=invite_{codigo_admin}"
+    
+    await update.message.reply_text(
+        f"🔗 **Tu enlace de invitación es:**\n\n"
+        f"{enlace}\n\n"
+        f"Comparte este enlace para que nuevos jugadores se registren.",
+        parse_mode="Markdown"
     )
 
 # === COMANDO /start deposito (INTACTO) ===
@@ -187,6 +318,18 @@ async def crear_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Administrador {codigo} creado correctamente.")
     print(f"👑 Nuevo admin creado: {codigo} por CREADOR (ID: {user.id})")
 
+# === MANEJADOR DE CALLBACKS (para botones inline) ===
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "micodigo":
+        # Ejecutar comando /micodigo
+        await micodigo(update, context)
+    elif query.data == "iniciar":
+        # Simular que el usuario escribió /start
+        await start(update, context)
+
 # === MANEJADOR DE ERRORES ===
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.error(f"Error: {context.error}")
@@ -208,13 +351,18 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     # Comandos
-    app.add_handler(CommandHandler("start", start))  # AHORA maneja invitaciones
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("micodigo", micodigo))
+    app.add_handler(CommandHandler("mi_enlace", mi_enlace))
     app.add_handler(MessageHandler(filters.Regex('^/start deposito'), start_deposito))
     app.add_handler(CommandHandler("crear_admin", crear_admin))
+    
+    # Manejador de callbacks para botones inline
+    app.add_handler(CallbackQueryHandler(button_callback))
 
     app.add_error_handler(error_handler)
 
-    print("🤖 Bot Orlando está corriendo...")
+    print("🤖 Bot Orlando está corriendo con Prioridad 3 completada...")
     app.run_polling()
 
 if __name__ == "__main__":
