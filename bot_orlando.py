@@ -132,6 +132,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Para jugar necesitas un enlace de invitación de un administrador."
         )
 
+# === COMANDO /mi_enlace (SOLO PARA CREADOR) ===
+async def mi_enlace(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Devuelve el enlace de invitación del administrador (solo para el creador)"""
+    user = update.effective_user
+    
+    # Solo el creador puede usar este comando
+    if user.id != CREADOR_ID:
+        await update.message.reply_text("❌ No tienes permiso para usar este comando.")
+        return
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Buscar el código del admin del creador
+    cursor.execute("SELECT codigo_admin FROM administradores WHERE telegram_id = ?", (user.id,))
+    admin = cursor.fetchone()
+    conn.close()
+    
+    if not admin:
+        await update.message.reply_text(
+            "❌ No tienes un código de administrador asociado.\n"
+            "Primero debes crearlo con /crear_admin ADMIN_001"
+        )
+        return
+    
+    codigo_admin = admin[0]
+    enlace = f"https://t.me/{BOT_USERNAME[1:]}?start=invite_{codigo_admin}"
+    
+    await update.message.reply_text(
+        f"🔗 **Tu enlace de invitación es:**\n\n"
+        f"{enlace}\n\n"
+        f"Comparte este enlace para que nuevos jugadores se registren.",
+        parse_mode="Markdown"
+    )
+
 # === COMANDO /start deposito (INTACTO) ===
 async def start_deposito(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -216,10 +251,11 @@ def main():
 
     # Comandos
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("mi_enlace", mi_enlace))  # ← AÑADIDO
     app.add_handler(MessageHandler(filters.Regex('^/start deposito'), start_deposito))
     app.add_handler(CommandHandler("crear_admin", crear_admin))
     
-    # Configurar invitaciones (NUEVO)
+    # Configurar invitaciones
     setup_invitaciones(app)
 
     app.add_error_handler(error_handler)
